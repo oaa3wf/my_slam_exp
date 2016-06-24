@@ -1,0 +1,8 @@
+prefix=/home/sastrygrp/code/slam/test_slam/install
+
+Name: my_slam
+Description: Description of my_slam
+Version: 0.0.0
+Cflags: -I/home/sastrygrp/code/slam/test_slam/install/include
+Libs: -L/home/sastrygrp/code/slam/test_slam/install/lib 
+Requires: roscpp rospy std_msgs pcl_conversions pcl_ros roscpp sensor_msgs message_runtime std_msgs

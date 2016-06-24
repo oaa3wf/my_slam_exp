@@ -1,0 +1,513 @@
+/* This file is part of RGBDSLAM.
+ * 
+ * RGBDSLAM is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ * 
+ * RGBDSLAM is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * along with RGBDSLAM.  If not, see <http://www.gnu.org/licenses/>.
+ */
+#include <ros/ros.h>
+#include <tf/transform_datatypes.h>
+#include <Eigen/Core>
+#include <QString>
+#include <QMatrix4x4>
+#include <ctime>
+#include <limits>
+#include <algorithm>
+#include <cv.h>
+
+
+#include "g2o/types/slam3d/se3quat.h"
+#include "g2o/types/slam3d/vertex_se3.h"
+
+#include <pcl_ros/transforms.h>
+#include "pcl/common/io.h"
+#include "pcl/common/distances.h"
+
+#if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION >= 4
+#include "opencv2/core/core.hpp"
+#include "opencv2/features2d/features2d.hpp"
+#include "opencv2/highgui/highgui.hpp"
+#endif
+
+#include <omp.h>
+//For the observability test
+#include <boost/math/distributions/chi_squared.hpp>
+#include <numeric>
+
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/CameraInfo.h>
+
+/**
+static void getCameraIntrinsics(float& fx, float& fy, float& cx, float& cy, const sensor_msgs::CameraInfo& cam_info) 
+{
+  ParameterServer* ps = ParameterServer::instance();
+  fx = ps->get<double>("depth_camera_fx") != 0 ? ps->get<double>("depth_camera_fx") : cam_info.K[0];
+  fy = ps->get<double>("depth_camera_fy") != 0 ? ps->get<double>("depth_camera_fy") : cam_info.K[4];
+  cx = ps->get<double>("depth_camera_cx") != 0 ? ps->get<double>("depth_camera_cx") : cam_info.K[2];
+  cy = ps->get<double>("depth_camera_cy") != 0 ? ps->get<double>("depth_camera_cy") : cam_info.K[5];
+}
+static void getCameraIntrinsicsInverseFocalLength(float& fxinv, float& fyinv, float& cx, float& cy, const sensor_msgs::CameraInfo& cam_info) 
+{
+  getCameraIntrinsics(fxinv, fyinv, cx, cy, cam_info);
+  fxinv = 1./ fxinv;
+  fyinv = 1./ fyinv;
+}
+
+
+
+tf::Transform g2o2TF(const g2o::SE3Quat se3) {
+    tf::Transform result;
+    tf::Vector3 translation;
+    translation.setX(se3.translation().x());
+    translation.setY(se3.translation().y());
+    translation.setZ(se3.translation().z());
+
+    tf::Quaternion rotation;
+    rotation.setX(se3.rotation().x());
+    rotation.setY(se3.rotation().y());
+    rotation.setZ(se3.rotation().z());
+    rotation.setW(se3.rotation().w());
+
+    result.setOrigin(translation);
+    result.setRotation(rotation);
+    //printTransform("from conversion", result);
+    return result;
+}
+
+
+//do spurious type conversions
+geometry_msgs::Point pointInWorldFrame(const Eigen::Vector4f& point3d, const g2o::VertexSE3::EstimateType& transf)
+{
+    Eigen::Vector3d tmp(point3d[0], point3d[1], point3d[2]);
+    tmp = transf * tmp; //transform to world frame
+    geometry_msgs::Point p;
+    p.x = tmp.x(); 
+    p.y = tmp.y(); 
+    p.z = tmp.z();
+    return p;
+}
+**/ 
+
+double max_translation_meter_ = 10000000000.0;
+double min_translation_meter_ = 0.0;
+double max_rotation_degree_ = 360.0;
+double min_rotation_degree_ = 0.0;
+
+
+inline double depth_std_dev(double depth)
+{
+  // From Khoselham and Elberink?
+  static double depth_std_dev = 0.01;//ParameterServer::instance()->get<double>("sigma_depth");
+  // Previously used 0.006 from information on http://www.ros.org/wiki/openni_kinect/kinect_accuracy;
+  // ...using 2sigma = 95%ile
+  //static const double depth_std_dev  = 0.006;
+  return depth_std_dev * depth * depth;
+}
+//Functions without dependencies
+inline double depth_covariance(double depth)
+{
+  static double stddev = depth_std_dev(depth);
+  static double cov = stddev * stddev;
+  return cov;
+}
+
+template <typename T >
+QMatrix4x4 eigenTF2QMatrix(const T& transf) 
+{
+  Eigen::Matrix<qreal, 4, 4, Eigen::RowMajor> m = transf.matrix();
+  QMatrix4x4 qmat( static_cast<qreal*>( m.data() )  );
+  //printQMatrix4x4("From Eigen::Transform", qmat); 
+  return qmat;
+}
+
+
+template <typename T >
+tf::Transform eigenTransf2TF(const T& transf) 
+{
+    tf::Transform result;
+    tf::Vector3 translation;
+    translation.setX(transf.translation().x());
+    translation.setY(transf.translation().y());
+    translation.setZ(transf.translation().z());
+
+    tf::Quaternion rotation;
+    Eigen::Quaterniond quat;
+    quat = transf.rotation();
+    rotation.setX(quat.x());
+    rotation.setY(quat.y());
+    rotation.setZ(quat.z());
+    rotation.setW(quat.w());
+
+    result.setOrigin(translation);
+    result.setRotation(rotation);
+    //printTransform("from conversion", result);
+    return result;
+}
+
+void mat2dist(const Eigen::Matrix4f& t, double &dist){
+    dist = sqrt(t(0,3)*t(0,3)+t(1,3)*t(1,3)+t(2,3)*t(2,3));
+}
+///Get euler angles from affine matrix (helper for isBigTrafo)
+void mat2RPY(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw) {
+    roll = atan2(t(2,1),t(2,2));
+    pitch = atan2(-t(2,0),sqrt(t(2,1)*t(2,1)+t(2,2)*t(2,2)));
+    yaw = atan2(t(1,0),t(0,0));
+}
+void mat2components(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw, double& dist){
+
+  mat2RPY(t, roll,pitch,yaw);
+  mat2dist(t, dist);
+
+  roll = roll/M_PI*180;
+  pitch = pitch/M_PI*180;
+  yaw = yaw/M_PI*180;
+
+}
+
+void trafoSize(const Eigen::Isometry3d& t, double& angle, double& dist){
+  angle = acos((t.rotation().trace() -1)/2 ) *180.0 / M_PI;
+  dist = t.translation().norm();
+  ROS_INFO("Rotation:% 4.2f, Distance: % 4.3fm", angle, dist);
+}
+
+bool isBigTrafo(const Eigen::Isometry3d& t){
+    double angle, dist;
+    trafoSize(t, angle, dist);
+    return (dist > min_translation_meter_ ||
+    	      angle > min_rotation_degree_);
+}
+
+// true iff edge qualifies for generating a new vertex
+bool isBigTrafo(const Eigen::Matrix4f& t){
+    double roll, pitch, yaw, dist;
+
+    mat2RPY(t, roll,pitch,yaw);
+    mat2dist(t, dist);
+
+    roll = roll/M_PI*180;
+    pitch = pitch/M_PI*180;
+    yaw = yaw/M_PI*180;
+
+    double max_angle = std::max(roll,std::max(pitch,yaw));
+
+    return (dist > min_translation_meter_ || max_angle > min_rotation_degree_);
+}
+
+
+bool isSmallTrafo(const Eigen::Isometry3d& t, double seconds){
+    if(seconds <= 0.0){
+      ROS_WARN("Time delta invalid: %f. Skipping test for small transformation", seconds);
+      return true;
+    }
+    
+    double angle_around_axis, dist;
+    trafoSize(t, angle_around_axis, dist);
+
+ 
+    return (dist / seconds < max_translation_meter_ &&
+            angle_around_axis / seconds < max_rotation_degree_);
+}
+
+bool isSmallTrafo(const g2o::SE3Quat& t, double seconds){
+    if(seconds <= 0.0){
+      ROS_WARN("Time delta invalid: %f. Skipping test for small transformation", seconds);
+      return true;
+    }
+    float angle_around_axis = 2.0*acos(t.rotation().w()) *180.0 / M_PI;
+    float dist = t.translation().norm();
+    QString infostring;
+    ROS_DEBUG("Rotation:% 4.2f, Distance: % 4.3fm", angle_around_axis, dist);
+    infostring.sprintf("Rotation:% 4.2f, Distance: % 4.3fm", angle_around_axis, dist);
+    //Q_EMIT setGUIInfo2(infostring);
+
+    //Too big fails too
+    return (dist / seconds < max_translation_meter_ &&
+            angle_around_axis / seconds < max_rotation_degree_);
+}
+
+bool isBigTrafo(const g2o::SE3Quat& t){
+    float angle_around_axis = 2.0*acos(t.rotation().w()) *180.0 / M_PI;
+    float dist = t.translation().norm();
+    QString infostring;
+    ROS_DEBUG("Rotation:% 4.2f, Distance: % 4.3fm", angle_around_axis, dist);
+    infostring.sprintf("Rotation:% 4.2f, Distance: % 4.3fm", angle_around_axis, dist);
+    //Q_EMIT setGUIInfo2(infostring);
+
+    return (dist > min_translation_meter_ ||
+            angle_around_axis > min_rotation_degree_);
+}
+
+/**
+g2o::SE3Quat tf2G2O(const tf::Transform t) 
+{
+  Eigen::Quaterniond eigen_quat(t.getRotation().getW(), t.getRotation().getX(), t.getRotation().getY(), t.getRotation().getZ());
+  Eigen::Vector3d translation(t.getOrigin().x(), t.getOrigin().y(), t.getOrigin().z());
+  g2o::SE3Quat result(eigen_quat, translation);
+  return result;
+}
+
+g2o::SE3Quat eigen2G2O(const Eigen::Matrix4d& eigen_mat) 
+{
+  Eigen::Affine3d eigen_transform(eigen_mat);
+  Eigen::Quaterniond eigen_quat(eigen_transform.rotation());
+  Eigen::Vector3d translation(eigen_mat(0, 3), eigen_mat(1, 3), eigen_mat(2, 3));
+  g2o::SE3Quat result(eigen_quat, translation);
+
+  return result;
+}
+**/
+//Little debugging helper functions
+std::string openCVCode2String(unsigned int code){
+  switch(code){
+    case 0 : return std::string("CV_8UC1" );
+    case 8 : return std::string("CV_8UC2" );
+    case 16: return std::string("CV_8UC3" );
+    case 24: return std::string("CV_8UC4" );
+    case 2 : return std::string("CV_16UC1");
+    case 10: return std::string("CV_16UC2");
+    case 18: return std::string("CV_16UC3");
+    case 26: return std::string("CV_16UC4");
+    case 5 : return std::string("CV_32FC1");
+    case 13: return std::string("CV_32FC2");
+    case 21: return std::string("CV_32FC3");
+    case 29: return std::string("CV_32FC4");
+  }
+  return std::string("Unknown");
+}
+
+void depthToCV8UC1(cv::Mat& depth_img, cv::Mat& mono8_img){
+  //Process images
+  if(depth_img.type() == CV_32FC1){
+    depth_img.convertTo(mono8_img, CV_8UC1, 100,0); //milimeter (scale of mono8_img does not matter)
+  }
+  else if(depth_img.type() == CV_16UC1){
+    mono8_img = cv::Mat(depth_img.size(), CV_8UC1);
+    cv::Mat float_img;
+    depth_img.convertTo(mono8_img, CV_8UC1, 0.05, -25); //scale to 2cm
+    depth_img.convertTo(float_img, CV_32FC1, 0.001, 0);//From mm to m(scale of depth_img matters)
+    depth_img = float_img;
+  }
+  else {
+    //printMatrixInfo(depth_img, "Depth Image");
+    //ROS_ERROR_STREAM("Don't know how to handle depth image of type "<< openCVCode2String(depth_img.type()));
+		
+  }
+}
+
+
+
+///\cond
+/** Union for easy "conversion" of rgba data */
+typedef union
+{
+  struct /*anonymous*/
+  {
+    unsigned char Blue;
+    unsigned char Green;
+    unsigned char Red;
+    unsigned char Alpha;
+  };
+  float float_value;
+  long long_value;
+} RGBValue;
+///\endcond
+
+
+double errorFunction(const Eigen::Vector4f& x1, const double x1_depth_cov, 
+                     const Eigen::Vector4f& x2, const double x2_depth_cov, 
+                     const Eigen::Matrix4f& tf_1_to_2)
+{
+  const double cam_angle_x = 58.0/180.0*M_PI;
+  const double cam_angle_y = 45.0/180.0*M_PI;
+  const double cam_resol_x = 640;
+  const double cam_resol_y = 480;
+  const double raster_stddev_x = 2*tan(cam_angle_x/cam_resol_x);  //2pix stddev in x
+  const double raster_stddev_y = 2*tan(cam_angle_y/cam_resol_y);  //2pix stddev in y
+  const double raster_cov_x = raster_stddev_x * raster_stddev_x;
+  const double raster_cov_y = raster_stddev_y * raster_stddev_y;
+
+  ROS_DEBUG_COND(x1(3) != 1.0, "4th element of x1 should be 1.0, is %f", x1(3));
+  ROS_DEBUG_COND(x2(3) != 1.0, "4th element of x2 should be 1.0, is %f", x2(3));
+  
+  Eigen::Vector3d mu_1 = x1.head<3>().cast<double>();
+  Eigen::Vector3d mu_2 = x2.head<3>().cast<double>();
+  Eigen::Matrix3d rotation_mat = tf_1_to_2.block(0,0,3,3).cast<double>();
+
+  //Point 1
+  Eigen::Matrix3d cov1 = Eigen::Matrix3d::Identity();
+  cov1(0,0) = raster_cov_x* mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(1,1) = raster_cov_y* mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(2,2) = x1_depth_cov;
+  //Point2
+  Eigen::Matrix3d cov2 = Eigen::Matrix3d::Identity();
+  cov2(0,0) = raster_cov_x* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov2(1,1) = raster_cov_y* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov2(2,2) = x2_depth_cov;
+
+  Eigen::Matrix3d cov2inv = cov2.inverse(); // Σ₂⁻¹  
+
+  Eigen::Vector3d mu_1_in_frame_2 = (tf_1_to_2 * x1).head<3>().cast<double>(); // μ₁⁽²⁾  = T₁₂ μ₁⁽¹⁾  
+  Eigen::Matrix3d cov1_in_frame_2 = rotation_mat.transpose() * cov1 * rotation_mat;//Works since the cov is diagonal => Eig-Vec-Matrix is Identity
+  Eigen::Matrix3d cov1inv_in_frame_2 = cov1_in_frame_2.inverse();// Σ₁⁻¹  
+
+  Eigen::Matrix3d cov_sum = (cov1inv_in_frame_2 + cov2inv);
+  Eigen::Matrix3d inv_cov_sum = cov_sum.inverse();
+  ROS_ERROR_STREAM_COND(inv_cov_sum!=inv_cov_sum,"Sum of Covariances not invertible: \n" << cov_sum);
+
+  Eigen::Vector3d x_ml;//Max Likelhood Position of latent point, that caused the sensor msrmnt
+  x_ml = inv_cov_sum * (cov1inv_in_frame_2 * mu_1_in_frame_2 + cov2inv * mu_2); // (Σ₁⁻¹ +  Σ₂⁻¹)⁻¹(Σ₁⁻¹μ₁  +  Σ₂⁻¹μ₂)
+  Eigen::Vector3d delta_mu_1 = mu_1_in_frame_2 - x_ml;
+  Eigen::Vector3d delta_mu_2 = mu_2 - x_ml;
+  
+  float sqrd_mahalanobis_distance1 = delta_mu_1.transpose() * cov1inv_in_frame_2 * delta_mu_1;// Δx_2^T Σ Δx_2 
+  float sqrd_mahalanobis_distance2 = delta_mu_2.transpose() * cov2inv * delta_mu_2; // Δx_1^T Σ Δx_1
+  float bad_mahalanobis_distance = sqrd_mahalanobis_distance1 + sqrd_mahalanobis_distance2; //FIXME
+
+  if(!(bad_mahalanobis_distance >= 0.0))
+  {
+    ROS_ERROR_STREAM("Non-Positive Mahalanobis Distance");
+    return std::numeric_limits<double>::max();
+  }
+  ROS_DEBUG_STREAM_NAMED("statistics", "Mahalanobis ML: " << std::setprecision(25) << bad_mahalanobis_distance);
+  return bad_mahalanobis_distance;
+}
+
+double errorFunction2(const Eigen::Vector4f& x1,
+                      const Eigen::Vector4f& x2,
+                      const Eigen::Matrix4d& transformation)
+{
+  //FIXME: Take from paramter_server or cam info
+  static const double cam_angle_x = 58.0/180.0*M_PI;/*{{{*/
+  static const double cam_angle_y = 45.0/180.0*M_PI;
+  static const double cam_resol_x = 640;
+  static const double cam_resol_y = 480;
+  static const double raster_stddev_x = 3*tan(cam_angle_x/cam_resol_x);  //5pix stddev in x
+  static const double raster_stddev_y = 3*tan(cam_angle_y/cam_resol_y);  //5pix stddev in y
+  static const double raster_cov_x = raster_stddev_x * raster_stddev_x;
+  static const double raster_cov_y = raster_stddev_y * raster_stddev_y;/*}}}*/
+
+  static const bool use_error_shortcut = true;//ParameterServer::instance()->get<bool>("use_error_shortcut");
+
+  bool nan1 = isnan(x1(2));
+  bool nan2 = isnan(x2(2));
+  if(nan1||nan2){
+    //TODO: Handle Features with NaN, by reporting the reprojection error
+    return std::numeric_limits<double>::max();
+  }
+  Eigen::Vector4d x_1 = x1.cast<double>();
+  Eigen::Vector4d x_2 = x2.cast<double>();
+
+  Eigen::Matrix4d tf_12 = transformation;
+  Eigen::Vector3d mu_1 = x_1.head<3>();
+  Eigen::Vector3d mu_2 = x_2.head<3>();
+  Eigen::Vector3d mu_1_in_frame_2 = (tf_12 * x_1).head<3>(); // μ₁⁽²⁾  = T₁₂ μ₁⁽¹⁾  
+  //New Shortcut to determine clear outliers
+  if(use_error_shortcut)
+  {
+    double delta_sq_norm = (mu_1_in_frame_2 - mu_2).squaredNorm();
+    double sigma_max_1 = std::max(raster_cov_x, depth_covariance(mu_1(2)));//Assuming raster_cov_x and _y to be approx. equal
+    double sigma_max_2 = std::max(raster_cov_x, depth_covariance(mu_2(2)));//Assuming raster_cov_x and _y to be approx. equal
+    if(delta_sq_norm > 2.0 * (sigma_max_1+sigma_max_2)) //FIXME: Factor 3 for mahal dist should be gotten from caller
+    {
+      return std::numeric_limits<double>::max();
+    }
+  } 
+
+  Eigen::Matrix3d rotation_mat = tf_12.block(0,0,3,3);
+
+  //Point 1
+  Eigen::Matrix3d cov1 = Eigen::Matrix3d::Zero();
+  cov1(0,0) = raster_cov_x * mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(1,1) = raster_cov_y * mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(2,2) = depth_covariance(mu_1(2));
+
+  //Point2
+  Eigen::Matrix3d cov2 = Eigen::Matrix3d::Zero();
+  cov2(0,0) = raster_cov_x* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov2(1,1) = raster_cov_y* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov2(2,2) = depth_covariance(mu_2(2));
+
+  Eigen::Matrix3d cov1_in_frame_2 = rotation_mat.transpose() * cov1 * rotation_mat;//Works since the cov is diagonal => Eig-Vec-Matrix is Identity
+
+  // Δμ⁽²⁾ =  μ₁⁽²⁾ - μ₂⁽²⁾
+  Eigen::Vector3d delta_mu_in_frame_2 = mu_1_in_frame_2 - mu_2;
+  if(isnan(delta_mu_in_frame_2(2))){
+    ROS_ERROR("Unexpected NaN");
+    return std::numeric_limits<double>::max();
+  }
+  // Σc = (Σ₁ + Σ₂)
+  Eigen::Matrix3d cov_mat_sum_in_frame_2 = cov1_in_frame_2 + cov2;     
+  //ΔμT Σc⁻¹Δμ  
+  //double sqrd_mahalanobis_distance = delta_mu_in_frame_2.transpose() * cov_mat_sum_in_frame_2.inverse() * delta_mu_in_frame_2;
+  double sqrd_mahalanobis_distance = delta_mu_in_frame_2.transpose() *cov_mat_sum_in_frame_2.llt().solve(delta_mu_in_frame_2);
+  
+  if(!(sqrd_mahalanobis_distance >= 0.0))
+  {
+    return std::numeric_limits<double>::max();
+  }
+  return sqrd_mahalanobis_distance;
+}
+
+
+
+float getMinDepthInNeighborhood(const cv::Mat& depth, cv::Point2f center, float diameter){
+    // Get neighbourhood area of keypoint
+    int radius = (diameter - 1)/2;
+    int top   = center.y - radius; top   = top   < 0 ? 0 : top;
+    int left  = center.x - radius; left  = left  < 0 ? 0 : left;
+    int bot   = center.y + radius; bot   = bot   > depth.rows ? depth.rows : bot;
+    int right = center.x + radius; right = right > depth.cols ? depth.cols : right;
+
+    cv::Mat neigborhood(depth, cv::Range(top, bot), cv::Range(left,right));
+    double minZ = std::numeric_limits<float>::quiet_NaN();
+    cv::minMaxLoc(neigborhood, &minZ);
+    if(minZ == 0.0){ //FIXME: Why are there features with depth set to zero?
+      ROS_INFO_THROTTLE(1,"Caught feature with zero in depth neighbourhood");
+      minZ = std::numeric_limits<float>::quiet_NaN();
+    }
+
+    return static_cast<float>(minZ);
+}
+
+
+#include <pcl/ros/conversions.h>
+
+#include <math.h>
+#define SQRT_2_PI 2.5066283
+#define SQRT_2 1.41421
+#define LOG_SQRT_2_PI = 0.9189385332
+
+inline int round(float d)
+{
+  return static_cast<int>(floor(d + 0.5));
+}
+// Returns the probability of [-inf,x] of a gaussian distribution
+double cdf(double x, double mu, double sigma)
+{
+	return 0.5 * (1 + erf((x - mu) / (sigma * SQRT_2)));
+}
+
+///Overlay the monochrom edges and depth jumps
+void overlay_edges(cv::Mat visual, cv::Mat depth, cv::Mat& visual_edges, cv::Mat& depth_edges)
+{
+  if(visual.type() != CV_8UC1){
+    visual_edges = cv::Mat( visual.rows, visual.cols, CV_8UC1); 
+    cv::cvtColor(visual, visual_edges, CV_RGB2GRAY);
+  }
+  else 
+  {
+    visual_edges = visual;
+  }
+  cv::blur( visual_edges, visual_edges, cv::Size(3,3) );
+  cv::Canny(visual_edges, visual_edges, 25, 300);
+  cv::Canny(depth, depth_edges, 10, 300);
+}
+

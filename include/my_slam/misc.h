@@ -1,0 +1,106 @@
+#ifndef MY_SLAM_MISC_H_
+#define MY_SLAM_MISC_H_
+/* This file is part of RGBDSLAM.
+ * 
+ * RGBDSLAM is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ * 
+ * RGBDSLAM is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * along with RGBDSLAM.  If not, see <http://www.gnu.org/licenses/>.
+ */
+#include <QMatrix4x4>
+#include <tf/transform_datatypes.h>
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/CameraInfo.h>
+#include <cv.h>
+#include "g2o/types/slam3d/vertex_se3.h"
+
+
+
+
+template <typename T >
+QMatrix4x4 eigenTF2QMatrix(const T& transf) 
+{
+  Eigen::Matrix<qreal, 4, 4, Eigen::RowMajor> m = transf.matrix();
+  QMatrix4x4 qmat( static_cast<qreal*>( m.data() )  );
+  //printQMatrix4x4("From Eigen::Transform", qmat); 
+  return qmat;
+}
+
+template <typename T >
+tf::Transform eigenTransf2TF(const T& transf) 
+{
+    tf::Transform result;
+    tf::Vector3 translation;
+    translation.setX(transf.translation().x());
+    translation.setY(transf.translation().y());
+    translation.setZ(transf.translation().z());
+
+    tf::Quaternion rotation;
+    Eigen::Quaterniond quat;
+    quat = transf.rotation();
+    rotation.setX(quat.x());
+    rotation.setY(quat.y());
+    rotation.setZ(quat.z());
+    rotation.setW(quat.w());
+
+    result.setOrigin(translation);
+    result.setRotation(rotation);
+    //printTransform("from conversion", result);
+    return result;
+}
+
+
+
+/// get euler angles and translation from 4x4 homogenous
+void mat2components(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw, double& dist);
+/// get euler angles from 4x4 homogenous
+void mat2RPY(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw);
+/// get translation-distance from 4x4 homogenous
+void mat2dist(const Eigen::Matrix4f& t, double &dist);
+
+// true if translation > 10cm or largest euler-angle>5 deg
+// used to decide if the camera has moved far enough to generate a new nodes
+//bool isBigTrafo(const Eigen::Matrix4f& t);
+bool isBigTrafo(const Eigen::Isometry3d& t);
+bool isBigTrafo(const g2o::SE3Quat& t);
+//! Computes whether the motion per time is bigger than the parameters max_translation_meter and max_rotation_degree define
+bool isSmallTrafo(const g2o::SE3Quat& t, double seconds = 1.0);
+bool isSmallTrafo(const Eigen::Isometry3d& t, double seconds = 1.0);
+
+
+//bool overlappingViews(LoadedEdge3D edge);
+//bool triangleRayIntersection(Eigen::Vector3d triangle1,Eigen::Vector3d triangle2, Eigen::Vector3d ray_origin, Eigen::Vector3d ray);
+
+
+///Convert the CV_32FC1 image to CV_8UC1 with a fixed scale factor
+void depthToCV8UC1(cv::Mat& float_img, cv::Mat& mono8_img);
+
+///Return the macro string for the cv::Mat type integer
+std::string openCVCode2String(unsigned int code);
+
+
+
+double errorFunction(const Eigen::Vector4f& x1, const double x1_depth_cov, 
+                      const Eigen::Vector4f& x2, const double x2_depth_cov, 
+                      const Eigen::Matrix4f& tf_1_to_2);
+
+double errorFunction2(const Eigen::Vector4f& x1, 
+                      const Eigen::Vector4f& x2, 
+                      const Eigen::Matrix4d& tf_1_to_2);
+
+float getMinDepthInNeighborhood(const cv::Mat& depth, cv::Point2f center, float diameter);
+
+
+/*
+cv::Point nearest_neighbor(const cv::Mat source&, const cv::Mat& destination, const Eigen::Matrix4f& transformation_source_to_destination, cv::Point query_point);
+Eigen::Vector3f nearest_neighbor(const cv::Mat source&, const cv::Mat& destination, const Eigen::Matrix4f& transformation_source_to_destination, Eigen::Vector3f query_point);
+*/
+#endif

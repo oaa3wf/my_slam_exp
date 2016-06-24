@@ -1,0 +1,28 @@
+main
+-----------
+gets images, imu etc ....
+creates a node and stores appropriate things
+routes node to graph manager
+listen for end signal
+listen for close signal
+
+node 
+--------------
+contains id
+contains pointcloud
+contains imu trafo
+contains ransac trafo
+contains kalman trafo
+contains final trafo
+
+has compare node function
+
+graph manager
+---------------
+contains graph object
+has addNode
+has add Edge
+has Optimize
+has a way to publish results so far
+
+
