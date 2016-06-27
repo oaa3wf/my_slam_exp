@@ -128,7 +128,7 @@ GraphManager::~GraphManager() {
 
 GraphManager::GraphManager(g2o::G2oSlamInterface* m_interface, g2o::SparseOptimizerIncremental* m_optimizer) :optimizer_(NULL),
 next_seq_id(0), next_vertex_id(0),
-optimizer_skip_step_(1),min_matches_(20)
+optimizer_skip_step_(1),sequential_edges(0),loop_closures_edges(0),min_matches_(20)
 {
 
 	backend = "pcg";
@@ -174,6 +174,9 @@ optimizer_skip_step_(1),min_matches_(20)
 
 
 	slamInterface->addNode("", 0, 6, std::vector<double>());
+
+	geodesic_depth_ = 3;
+	predecessor_candidates_ = 4;
 
  
     
@@ -267,6 +270,11 @@ if (new_node->feature_locations_2d_.size() < min_matches_) {
 		//This needs to be done before rendering, so deleting the cloud always works
     graph_[new_node->id_] = new_node; //Node->id_ == Graph_ Index
 
+
+
+		 if(!edge_to_last_keyframe_found && earliest_loop_closure_node_ > keyframe_ids_.back()) {
+        this->addKeyframe(new_node->id_-1);//use the id of the node before, because that one is still localized w.r.t. a keyframe. So keyframes are connected
+      }
 
 		 if(optimizer_skip_step_ > 0 && 
           (camera_vertices.size() % optimizer_skip_step_) == 0)
@@ -372,8 +380,10 @@ bool GraphManager::nodeComparisons(Node* new_node,
     new_node->seq_id_ = next_seq_id++; // allways incremented, even if node is not added
 
 
- 
+    earliest_loop_closure_node_ = new_node->id_;
 		unsigned int num_edges_before = cam_cam_edges_.size();
+		edge_to_keyframe = false; //not yet found
+
     int sequentially_previous_id = graph_.rbegin()->second->id_; 
     //int best_match_candidate_id = sequentially_previous_id; 
     MatchingResult mr;
@@ -403,6 +413,7 @@ bool GraphManager::nodeComparisons(Node* new_node,
         if (addEdgeToG2O(mr.edge, prev_frame, new_node,  true, true, curr_motion_estimate)) 
         {
           graph_[new_node->id_] = new_node; //Needs to be added
+					if(keyframe_ids_.contains(mr.edge.id1)) edge_to_keyframe = true;
       }
       predecessor_matched = true;
     }
@@ -417,9 +428,9 @@ bool GraphManager::nodeComparisons(Node* new_node,
 
 	 //Eigen::Matrix4f ransac_trafo, final_trafo;
     QList<int> vertices_to_comp;
-    int  seq_cand = 10; //minus one, because the first predecessor has already been checked
-    int geod_cand = 0;
-    int samp_cand = 0;
+    int  seq_cand = predecessor_candidates_; //minus one, because the first predecessor has already been checked
+    int geod_cand = 4;
+    int samp_cand = 4;
     if(predecessor_matched){
       //vertices_to_comp = getPotentialEdgeTargetsWithDijkstra(new_node, seq_cand, geod_cand, samp_cand, curr_best_result_.edge.id1); 
 			  vertices_to_comp = getPotentialEdgeTargetsWithDijkstra(new_node, seq_cand, geod_cand, samp_cand, sequentially_previous_id, true); 
@@ -476,7 +487,7 @@ bool GraphManager::nodeComparisons(Node* new_node,
                   //if (curr_best_result_.edge.id1 == -1 || sqrTransNorm(mr.final_trafo) < sqrTransNorm(curr_best_result_.final_trafo)) {
                     curr_best_result_ = mr;
                   }
-                  //if(keyframe_ids_.contains(mr.edge.id1)) edge_to_keyframe = true;
+                  if(keyframe_ids_.contains(mr.edge.id1)) edge_to_keyframe = true;
                 }
                 else{
                   ROS_WARN("Rejected edge from %d to %d", mr.edge.id1, mr.edge.id2);
@@ -597,6 +608,23 @@ bool GraphManager::addEdgeToG2O(const LoadedEdge3D& edge,
     optimizer_->addEdge(g2o_edge);
     //ROS_DEBUG_STREAM("Added Edge ("<< edge.id1 << "-" << edge.id2 << ") to Optimizer:\n" << edge.transform << "\nInformation Matrix:\n" << edge.informationMatrix);
 	  cam_cam_edges_.insert(g2o_edge);
+
+
+		if(abs(edge.id1 - edge.id2) > predecessor_candidates_){
+      loop_closures_edges++;
+    } else {
+      sequential_edges++;
+    }
+    //current_edges_.append( qMakePair(n1->id_, n2->id_));
+
+    if (pose_relative_to_ == "inaffected") {
+      v1->setFixed(false);
+      v2->setFixed(false);
+    }
+    else if(pose_relative_to_ == "largest_loop") {
+      earliest_loop_closure_node_ = std::min(earliest_loop_closure_node_, edge.id1);
+      earliest_loop_closure_node_ = std::min(earliest_loop_closure_node_, edge.id2);
+    }
 	
 		Eigen::Matrix<double, 7, 1> B = g2o::internal::toVectorQT(meancopy);
 		
@@ -643,7 +671,7 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
       return -1.0;
     }
 
-    fixationOfVertices("first", optimizer_, graph_, camera_vertices, 0); 
+    fixationOfVertices("first", optimizer_, graph_, camera_vertices, earliest_loop_closure_node_); 
 
 
    if (pose_relative_to_ == "inaffected") {
@@ -785,6 +813,7 @@ void GraphManager::resetGraph(){
 
 
     next_seq_id = next_vertex_id = 0;
+		camera_vertices.clear();
     cam_cam_edges_.clear();
     createOptimizer();
 
@@ -792,6 +821,9 @@ void GraphManager::resetGraph(){
     BOOST_FOREACH(GraphNodeType entry, graph_){ delete entry.second; entry.second = NULL; }
     //for(unsigned int i = 0; i < graph_.size(); delete graph_[i++]);//No body
     graph_.clear();
+    keyframe_ids_.clear();
+		loop_closures_edges = 0; 
+    sequential_edges = 0;
 
 }
 
@@ -982,12 +1014,12 @@ QList<int> GraphManager::getPotentialEdgeTargetsWithDijkstra(const Node* new_nod
       }
     }
 
-/**
+
     if(geodesic_targets > 0){
       g2o::HyperDijkstra hypdij(optimizer_);
       g2o::UniformCostFunction cost_function;
       g2o::VertexSE3* prev_vertex = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_[predecessor_id]->vertex_id_));
-      hypdij.shortestPaths(prev_vertex,&cost_function,ParameterServer::instance()->get<int>("geodesic_depth"));
+      hypdij.shortestPaths(geodesic_depth_);
       g2o::HyperGraph::VertexSet& vs = hypdij.visited();
 
       //Need to convert vertex_id to node id
@@ -1080,7 +1112,38 @@ QList<int> GraphManager::getPotentialEdgeTargetsWithDijkstra(const Node* new_nod
       ss << predecessor_id;
     }
     ROS_INFO("%s", ss.str().c_str());
-		**/
+		
     return ids_to_link_to; //only compare to first frame
 }
 
+
+void GraphManager::addKeyframe(int id)
+{
+
+/**
+  ScopedTimer s(__FUNCTION__);
+  //Delete content of nodes that are behind the keyframe that is added
+  if(ParameterServer::instance()->get<bool>("clear_non_keyframes")){
+    if(keyframe_ids_.size() >= 2){
+      int most_recent= keyframe_ids_.back();
+      int second_most_recent= keyframe_ids_.at(keyframe_ids_.size() - 2);
+      ROS_INFO("Clearing out data for nodes between keyframes %d and %d", second_most_recent, most_recent);
+      for (std::map<int, Node*>::iterator it=graph_.begin(); it!=graph_.end(); ++it){
+        Node* mynode = it->second;
+        if(mynode->id_ > second_most_recent && mynode->id_ < most_recent){
+          //mynode->getMemoryFootprint(true);//print 
+          mynode->clearPointCloud();
+          mynode->clearFeatureInformation();
+        }
+      }
+    }
+  }
+**/
+  keyframe_ids_.push_back(id); 
+
+/**
+  std::stringstream ss; ss << keyframe_ids_.size() << " Keyframes: ";
+  BOOST_FOREACH(int i, keyframe_ids_){ ss << i << ", "; }
+  ROS_INFO("%s", ss.str().c_str());
+**/
+}
