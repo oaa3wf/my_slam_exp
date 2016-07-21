@@ -262,7 +262,7 @@ Node::Node(const cv::Mat visual,
 		//std::cout<< "Feature 2d size before extraction: "<< feature_locations_2d_.size()<<" , 3D: " << feature_locations_3d_.size() <<std::endl;
     extractor->compute(gray_img, feature_locations_2d_, feature_descriptors_); //fill feature_descriptors_ with information 
     projectTo3D(feature_locations_2d_, feature_locations_3d_, pc_col); //takes less than 0.01 sec
-		std::cout<< "Feature 2d size after extraction: "<< feature_locations_2d_.size()<<" , 3D: " << feature_locations_3d_.size() <<std::endl;
+		//std::cout<< "Feature 2d size after extraction: "<< feature_locations_2d_.size()<<" , 3D: " << feature_locations_3d_.size() <<std::endl;
   }
 
   if(true )//feature_detector_type_ != "GICP")
@@ -335,11 +335,11 @@ void Node::projectTo3D(std::vector<cv::KeyPoint>& feature_locations_2d,std::vect
     if(feature_locations_3d.size() >= max_keyp) break;
   }
 	//std::cout<< point_cloud->isOrganized() <<std::endl;
-	std::cout<< "Feature 2d size before: "<< feature_locations_2d.size()<<" , 3D: " << feature_locations_3d.size() <<std::endl;
+	//std::cout<< "Feature 2d size before: "<< feature_locations_2d.size()<<" , 3D: " << feature_locations_3d.size() <<std::endl;
   //ROS_INFO("Feature 2d size: %zu, 3D: %zu", feature_locations_2d.size(), feature_locations_3d.size());
   feature_locations_2d.resize(feature_locations_3d.size());
   //ROS_INFO("Feature 2d size: %zu, 3D: %zu", feature_locations_2d.size(), feature_locations_3d.size());
-	std::cout<< "Feature 2d size after: "<< feature_locations_2d.size()<<" , 3D: " << feature_locations_3d.size() <<std::endl;
+	//std::cout<< "Feature 2d size after: "<< feature_locations_2d.size()<<" , 3D: " << feature_locations_3d.size() <<std::endl;
 }
 
 MatchingResult Node::matchNodePair(const Node* older_node)

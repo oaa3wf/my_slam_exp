@@ -58,7 +58,8 @@ tf::Transform eigenTransf2TF(const T& transf)
 }
 
 
-
+///Overlay the monochrom edges and depth jumps
+void overlay_edges(cv::Mat visual, cv::Mat depth, cv::Mat& visual_edges, cv::Mat& depth_edges);
 /// get euler angles and translation from 4x4 homogenous
 void mat2components(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw, double& dist);
 /// get euler angles from 4x4 homogenous

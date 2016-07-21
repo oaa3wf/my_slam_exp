@@ -202,11 +202,24 @@ add_definitions(${EIGEN_DEFINITIONS})
 # Suitesparse #######################
 find_package(SuiteSparse REQUIRED)
 
+##############################################################################
+# Some QT Magic (MOC Creation)
+##############################################################################
+
+file(GLOB QT_FORMS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} ui/*.ui)
+file(GLOB QT_RESOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} resources/*.qrc)
+file(GLOB_RECURSE QT_MOC RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINKS include/local/*.hpp include/my_slam/openni_listener.h include/my_slam/qt_gui.h include/my_slam/graph_manager.h include/my_slam/glviewer.h include/my_slam/qtros.h )# include/my_slam/ros_service_ui.h )
+
+QT4_ADD_RESOURCES(QT_RESOURCES_CPP ${QT_RESOURCES})
+QT4_WRAP_UI(QT_FORMS_HPP ${QT_FORMS})
+QT4_WRAP_CPP(QT_MOC_HPP ${QT_MOC} OPTIONS -DBOOST_TT_HAS_OPERATOR_HPP_INCLUDED -DBOOST_NO_TEMPLATE_PARTIAL_SPECIALIZATION)
+#QT4_WRAP_CPP(QT_MOC_HPP ${QT_MOC}) 
+
 
 ##############################################################################
 # Sources to Compile
 ##############################################################################
-SET(ADDITIONAL_SOURCES src/main.cpp src/node.cpp src/matching_result.cpp src/openni_listener.cpp src/misc.cpp) #src/gicp-fallback.cpp src/main.cpp src/qtros.cpp  src/openni_listener.cpp src/qt_gui.cpp src/node.cpp src/glviewer.cpp src/parameter_server.cpp src/ros_service_ui.cpp src/misc.cpp src/landmark.cpp src/loop_closing.cpp src/ColorOctomapServer.cpp src/scoped_timer.cpp src/icp.cpp src/matching_result.cpp)
+SET(ADDITIONAL_SOURCES src/main.cpp src/node.cpp src/matching_result.cpp src/openni_listener.cpp src/misc.cpp  src/qt_gui.cpp src/glviewer.cpp src/parameter_server.cpp src/scoped_timer.cpp) # src/qtros.cpp src/gicp-fallback.cpp  src/ros_service_ui.cpp src/landmark.cpp src/loop_closing.cpp src/ColorOctomapServer.cpp  src/icp.cpp src/matching_result.cpp)
 #GraphManager Files
 SET(ADDITIONAL_SOURCES ${ADDITIONAL_SOURCES} src/graph_manager.cpp) #src/graph_mgr_io.cpp src/graph_manager2.cpp src/graph_mgr_odom.cpp)
 #SET(ADDITIONAL_SOURCES ${ADDITIONAL_SOURCES} src/transformation_estimation_euclidean.cpp src/transformation_estimation.cpp src/graph_manager2.cpp src/header.cpp)
@@ -219,20 +232,20 @@ SET(ADDITIONAL_SOURCES ${ADDITIONAL_SOURCES} src/aorb.cpp) # src/feature_adjuste
 # 	SET(ADDITIONAL_SOURCES ${ADDITIONAL_SOURCES} src/sift_gpu_wrapper.cpp)
 #ENDIF (${USE_SIFT_GPU})
 
-#file(GLOB_RECURSE QT_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINKS)
+file(GLOB_RECURSE QT_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINKS)
 
 #include_directories(external/ /usr/include/suitesparse/)
 include_directories(/usr/include/suitesparse/)
 ##############################################################################
 # Binaries
 ##############################################################################
-add_executable(my_slam ${ADDITIONAL_SOURCES}) #${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HPP} ${QT_MOC_HPP} ${ADDITIONAL_SOURCES})
+add_executable(my_slam ${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HPP} ${QT_MOC_HPP} ${ADDITIONAL_SOURCES})
 #dd_dependencies(rgbdslam rgbdslam_gencpp)
 
 
 SET(LIBS_LINK GL GLU cholmod cxsparse ${G2O_LIBRARIES} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS} ${CAMD_LIBRARY})
 
-target_link_libraries(my_slam ${LIBS_LINK}  ${catkin_LIBRARIES} /home/sastrygrp/code/3rd_party/g20/lib/libg2o_interface.so /home/sastrygrp/code/3rd_party/g20/lib/libg2o_interactive.so)
+target_link_libraries(my_slam ${LIBS_LINK}  ${catkin_LIBRARIES} /opt/ros/indigo/lib/libg2o_interface.so /opt/ros/indigo/lib/libg2o_interactive.so)
 
 
 ## Declare a C++ library

@@ -22,12 +22,28 @@
 #include <pcl/PCLHeader.h>
 #include <pcl_conversions/pcl_conversions.h>
 
+#include <sstream>
+#include <iostream>
+#include <string>
+#include <fstream>
+
+#include <sensor_msgs/PointCloud2.h>
+#include <pcl/ros/conversions.h>
+#include <pcl/common/transforms.h>
+
 typedef g2o::BlockSolver< g2o::BlockSolverTraits<6, 3> >  SlamBlockSolver;
 typedef g2o::LinearSolverCSparse<SlamBlockSolver::PoseMatrixType> SlamLinearCSparseSolver;
 typedef g2o::LinearSolverCholmod<SlamBlockSolver::PoseMatrixType> SlamLinearCholmodSolver;
 typedef g2o::LinearSolverPCG<SlamBlockSolver::PoseMatrixType> SlamLinearPCGSolver;
 typedef g2o::LinearSolverDense<SlamBlockSolver::PoseMatrixType> SlamLinearDenseSolver;
 
+std::ofstream fp2;
+std::string debug_filename = "/home/sastrygrp/Documents/debug.txt";
+
+//Eigen::IOFormat OctaveFmt(StreamPrecision, 0, ", ", ";\n", "", "", "[", "]");
+Eigen::IOFormat CleanFmt(4, 0, ", ", "\n", "[", "]");
+std::string sep = "\n----------------------------------------\n";
+//void visualizeClouds();
 void updateInlierFeatures(const MatchingResult& mr, Node* new_node, Node* old_node)
 {
 /**
@@ -122,6 +138,7 @@ GraphManager::~GraphManager() {
     //whole_cloud_pub_.shutdown();
     //marker_pub_.shutdown();
     //batch_cloud_pub_.shutdown();
+		fp2.close();
 
 }
 
@@ -141,7 +158,8 @@ optimizer_skip_step_(1),sequential_edges(0),loop_closures_edges(0),min_matches_(
 	 
 
   
-  //marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/pose_graph_markers",0);
+  marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/pose_graph_markers",0);
+	cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2 >("/rgbdslam/batch_clouds", 1);
   computed_motion_ = tf::Transform::getIdentity();
   init_base_pose_  = tf::Transform::getIdentity();
   //std::string fixed_frame = ParameterServer::instance()->get<std::string>("fixed_frame_name");
@@ -170,13 +188,15 @@ optimizer_skip_step_(1),sequential_edges(0),loop_closures_edges(0),min_matches_(
 	assert(slamInterface==NULL);
   slamInterface = m_interface;
   slamInterface->setUpdateGraphEachN(10);
-  slamInterface->setBatchSolveEachN(100);
+  slamInterface->setBatchSolveEachN(10);
 
 
 	slamInterface->addNode("", 0, 6, std::vector<double>());
 
 	geodesic_depth_ = 3;
 	predecessor_candidates_ = 4;
+
+	fp2.open(debug_filename.c_str(),std::ofstream::app | std::ofstream::binary);
 
  
     
@@ -264,17 +284,31 @@ if (new_node->feature_locations_2d_.size() < min_matches_) {
   bool edge_to_last_keyframe_found = false;
   bool found_match = nodeComparisons(new_node, motion_estimate, edge_to_last_keyframe_found);
 
+
+	
+
 	if (found_match) 
   { //Success
 
 		//This needs to be done before rendering, so deleting the cloud always works
     graph_[new_node->id_] = new_node; //Node->id_ == Graph_ Index
+		pointcloud_type* cloud_to_visualize = new_node->pc_col.get();
+		std_vector_of_eigen_vector4f * features_to_visualize = &(new_node->feature_locations_3d_);
+
+
+		if(!new_node->valid_tf_estimate_) {
+        cloud_to_visualize = new pointcloud_type();
+        features_to_visualize = new std_vector_of_eigen_vector4f();
+      }
 
 
 
 		 if(!edge_to_last_keyframe_found && earliest_loop_closure_node_ > keyframe_ids_.back()) {
         this->addKeyframe(new_node->id_-1);//use the id of the node before, because that one is still localized w.r.t. a keyframe. So keyframes are connected
       }
+
+		Q_EMIT setPointCloud(cloud_to_visualize, motion_estimate);
+    Q_EMIT setFeatures(features_to_visualize);
 
 		 if(optimizer_skip_step_ > 0 && 
           (camera_vertices.size() % optimizer_skip_step_) == 0)
@@ -285,6 +319,7 @@ if (new_node->feature_locations_2d_.size() < min_matches_) {
 
 			visualizeGraphEdges();
       visualizeGraphNodes();
+			//visualizeClouds();
 
 
 
@@ -352,7 +387,7 @@ void GraphManager::firstNode(Node* new_node)
     //pointcloud_type::Ptr the_pc(new_node->pc_col); //this would delete the cloud after the_pc gets out of scope
     //QMatrix4x4 latest_transform = g2o2QMatrix(g2o_ref_se3);
 
-
+		this->addKeyframe(new_node->id_);
    //process_node_runs_ = false;
 }
 
@@ -455,7 +490,7 @@ bool GraphManager::nodeComparisons(Node* new_node,
         }
         ROS_INFO_STREAM("Nodes to compare: " << ss);
         QThreadPool* qtp = QThreadPool::globalInstance();
-        ROS_INFO("Running node comparisons in parallel in %i (of %i) available threads", qtp->maxThreadCount() - qtp->activeThreadCount(), qtp->maxThreadCount());
+        //*****ROS_INFO("Running node comparisons in parallel in %i (of %i) available threads", qtp->maxThreadCount() - qtp->activeThreadCount(), qtp->maxThreadCount());
         if (qtp->maxThreadCount() - qtp->activeThreadCount() == 1) {
             //Never seen this problem...
             ROS_WARN("Few Threads Remaining: Increasing maxThreadCount to %i", qtp->maxThreadCount()+1);
@@ -625,11 +660,24 @@ bool GraphManager::addEdgeToG2O(const LoadedEdge3D& edge,
       earliest_loop_closure_node_ = std::min(earliest_loop_closure_node_, edge.id1);
       earliest_loop_closure_node_ = std::min(earliest_loop_closure_node_, edge.id2);
     }
-	
-		Eigen::Matrix<double, 7, 1> B = g2o::internal::toVectorQT(meancopy);
 		
+		
+
+		//fp2 << "Measurement  for full:-----------------------"<<std::endl;
+		//fp2 << meancopy.matrix().format(CleanFmt) << sep;
+		Eigen::Matrix<double, 7, 1> B = g2o::internal::toVectorQT(meancopy);
+		//fp2 << "Measurement  for incremental:-----------------------"<<std::endl;
+		//fp2 << B <<std::endl;
+	
+		//fp2 << "Information  for full:-----------------------"<<std::endl;
+		//Eigen::Matrix<double, 6, 6> K = edge.informationMatrix.inverse();
+		fp2 << edge.informationMatrix.format(CleanFmt) << sep;
 		std::vector<double> A(edge.informationMatrix.data(), edge.informationMatrix.data() + edge.informationMatrix.rows() * edge.informationMatrix.cols());
 		std::vector<double> C(B.data(), B.data() + B.rows() * B.cols());
+		//fp2<<"Information for incremental: -----------------------" <<std::endl;
+		//for(int i=0; i<A.size(); ++i)
+  		//fp2 << A[i] << ' ';
+		//fp2<<"/n"<<std::endl;
 
 		slamInterface->addEdge("", 0, 6, edge.id1, edge.id2,C,A);
 	
@@ -732,12 +780,16 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
 			}
 			std::cerr<< res <<std::endl;
       double prev_chi2;
+			chi2 = 0.05;
+
+			/**
       do {
         prev_chi2 = chi2; //chi2 is numeric_limits::max() in first iteration
         currentIt += optimizer_->optimize(5);//optimize 5 iterations per step
         optimizer_->computeActiveErrors();
         chi2 = optimizer_->chi2();
       } while(chi2/prev_chi2 < (1.0 - stop_cond));//e.g.  999/1000 < (1.0 - 0.01) => 0.999 < 0.99
+			**/
     }
 
     //ROS_WARN_STREAM_NAMED("eval", "G2O Statistics: " << std::setprecision(15) << camera_vertices.size() 
@@ -772,7 +824,7 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
 
 
  
-
+	Q_EMIT updateTransforms(getAllPosesAsMatrixList());
   //ROS_WARN_STREAM_NAMED("eval", "Optimizer Runtime; "<< s.elapsed() <<" s");
   return chi2; 
 }
@@ -1147,3 +1199,96 @@ void GraphManager::addKeyframe(int id)
   ROS_INFO("%s", ss.str().c_str());
 **/
 }
+
+/**
+QList<QMatrix4x4>* GraphManager::getAllPosesAsMatrixList() const{
+    //ScopedTimer s(__FUNCTION__);
+    //QList<QMatrix4x4> current_poses;
+    //ROS_DEBUG("Retrieving all transformations from optimizer");
+    QList<QMatrix4x4>* current_poses = new QList<QMatrix4x4>();
+    //current_poses.clear();
+#if defined(QT_VERSION) && QT_VERSION >= 0x040700
+    current_poses->reserve(camera_vertices.size()+10);//only allocates the internal pointer array. +10 for things like calibration vertices or whatever
+#endif
+
+    for (std::map<int, Node* >::const_iterator it = graph_.begin(); it !=graph_.end(); ++it){
+      const Node *node = it->second;
+      g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer2_->vertex( node->vertex_id_));
+      if(v){ 
+        current_poses->push_back(eigenTF2QMatrix(v->estimate())); 
+      } else {
+        ROS_ERROR("Nullpointer in graph at position %i!", it->first);
+      }
+    }
+    return current_poses;// new QList<QMatrix4x4>(current_poses); //pointer to a copy
+}
+**/
+
+void GraphManager::visualizeClouds(){
+
+ //ScopedTimer s(__FUNCTION__);
+    //QList<QMatrix4x4> current_poses;
+    //ROS_DEBUG("Retrieving all transformations from optimizer");
+    QList<QMatrix4x4>* current_poses = new QList<QMatrix4x4>();
+    //current_poses.clear();
+#if defined(QT_VERSION) && QT_VERSION >= 0x040700
+   // current_poses->reserve(camera_vertices.size()+10);//only allocates the internal pointer array. +10 for things like calibration vertices or whatever
+#endif
+
+		 pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_out(new pcl::PointCloud<pcl::PointXYZRGB>);
+		 pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_out2(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+    for (std::map<int, Node* >::const_iterator it = graph_.begin(); it !=graph_.end(); ++it){
+      const Node *node = it->second;
+      g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer2_->vertex( node->vertex_id_));
+      if(v && keyframe_ids_.contains(node->id_)){ 
+				// Update the sensor pose stored in the point clouds
+    		//node->pc_col->sensor_origin_.head<3>() = v->estimate().translation().cast<float>();
+   		 	//node->pc_col->sensor_orientation_ =  v->estimate().rotation().cast<float>();
+				//(*cloud_out) = *(node->pc_col);
+				pcl::transformPointCloud ((*node->pc_col), (*cloud_out), v->estimate().matrix());
+				(*cloud_out2) += *cloud_out;
+        //current_poses->push_back(eigenTF2QMatrix(v->estimate())); 
+      } else {
+        ROS_ERROR("Nullpointer in graph at position %i!", it->first);
+      }
+    }
+
+		sensor_msgs::PointCloud2 cloud_filtered_msg;
+		cloud_filtered_msg.header.stamp =  ros::Time::now();
+		cloud_filtered_msg.header.frame_id = "/camera_rgb_optical_frame";
+		pcl::toROSMsg(*cloud_out2,cloud_filtered_msg);
+		//publish cloud to rviz
+		if (cloud_pub_.getNumSubscribers() > 0){ 
+
+				cloud_filtered_msg.header.frame_id = "/camera_rgb_optical_frame";
+				cloud_pub_.publish(cloud_filtered_msg);
+
+		}
+		
+
+
+}
+
+QList<QMatrix4x4>* GraphManager::getAllPosesAsMatrixList() const{
+    //ScopedTimer s(__FUNCTION__);
+    //QList<QMatrix4x4> current_poses;
+    ROS_DEBUG("Retrieving all transformations from optimizer");
+    QList<QMatrix4x4>* current_poses = new QList<QMatrix4x4>();
+    //current_poses.clear();
+#if defined(QT_VERSION) && QT_VERSION >= 0x040700
+    current_poses->reserve(camera_vertices.size()+10);//only allocates the internal pointer array. +10 for things like calibration vertices or whatever
+#endif
+
+    for (std::map<int, Node* >::const_iterator it = graph_.begin(); it !=graph_.end(); ++it){
+      const Node *node = it->second;
+      g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer2_->vertex( node->vertex_id_));
+      if(v){ 
+        current_poses->push_back(eigenTF2QMatrix(v->estimate())); 
+      } else {
+        ROS_ERROR("Nullpointer in graph at position %i!", it->first);
+      }
+    }
+    return current_poses;// new QList<QMatrix4x4>(current_poses); //pointer to a copy
+}
+

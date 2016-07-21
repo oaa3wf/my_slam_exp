@@ -68,8 +68,26 @@ typedef pcl::PointCloud<pcl::PointXYZRGB> pointcloud_type;
  * them to a qt image and send them to the mainwindow
  * defined in qtcv.h/.cpp
  */
-class OpenNIListener {
- 
+class OpenNIListener : public QObject {
+	
+  Q_OBJECT 
+	Q_SIGNALS:
+    ///Connect to this signal to get up-to-date optical images from the listener
+    void newVisualImage(QImage);
+    ///Connect to this signal to get up-to-date featureFlow visualizations from the listener
+    void newFeatureImage(QImage);
+    void newFeatureFlowImage(QImage);
+    ///Connect to this signal to get up-to-date depth images from the listener
+    void newDepthImage(QImage);
+    //void pauseStatus(bool is_paused);
+    ///Set the info label on the right side in the statusbar of the GUI
+    void setGUIInfo(QString message);
+    void setGUIInfo2(QString message);
+    ///Set the temporary status-message in the GUI
+    void setGUIStatus(QString message);
+    void bagFinished();
+    void iamBusy(int id, const char* message, int max);
+    void progress(int id, const char* message, int val);
   public:
     //!Ctor: setup synced listening to ros topics (kinect/stereo data) and prepare the feature handling
     /*!Constructor: The listener needs to know the node handle and the GraphManager instance.
@@ -125,6 +143,8 @@ class OpenNIListener {
     void visualizeGraphEdges() const;
     ///Send markers to visualize the graph nodes (cam positions) in rviz (if somebody subscribed)
     void visualizeGraphNodes() const;
+
+    void visualize_images(cv::Mat visual_image, cv::Mat depth_image);
 
     ///The GraphManager uses the Node objects to do the actual SLAM
     ///Public, s.t. the qt signals can be connected to by the holder of the OpenNIListener

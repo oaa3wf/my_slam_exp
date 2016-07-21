@@ -22,6 +22,9 @@
 
 #include <QMatrix4x4>
 #include <QMutex>
+#include <QObject>
+
+#include "my_slam/parameter_server.h"
 
 
 //typedef g2o::HyperGraph::VertexSet::iterator Vset_it;
@@ -31,11 +34,29 @@ typedef std::set<g2o::HyperGraph::Edge*> EdgeSet;
 typedef g2o::HyperGraph::EdgeSet::iterator EdgeSet_it;
 typedef std::map<int, Node* >::iterator graph_it;
 
-class GraphManager{
+class GraphManager : public QObject {
+		Q_OBJECT
+		Q_SIGNALS:
+///Connect to this signal to get the transformation matrix from the last frame as QString
+      void newTransformationMatrix(QString);
+      void sendFinished();
+      void setGUIInfo(QString message);
+      void setGUIStatus(QString message);
+      void setPointCloud(pointcloud_type * pc, QMatrix4x4 transformation);
+      void setFeatures(const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >*);
+      void updateTransforms(QList<QMatrix4x4>* transformations);
+      void setGUIInfo2(QString message);
+      void setGraphEdges(const QList<QPair<int, int> >* edge_list);
+      void deleteLastNode();
+      void resetGLViewer();
+      void setGraph(const g2o::OptimizableGraph*);
+      void iamBusy(int id, const char* message, int max);
+      void progress(int id, const char* message, int val);
+      void renderableOctomap(Renderable* r);
 
-public:
-	GraphManager();
-  //GraphManager(g2o::G2oSlamInterface* m_interface, g2o::SparseOptimizerIncremental* m_optimizer);
+	public:
+	//GraphManager();
+  GraphManager(g2o::G2oSlamInterface* m_interface, g2o::SparseOptimizerIncremental* m_optimizer);
   ~GraphManager();
 
     //! Add new node to the graph.
@@ -67,6 +88,9 @@ public:
 
     void resetGraph();
 
+    ///Add a keyframe to the list (and log keyframes)
+    void addKeyframe(int id);
+
 		typedef std::pair<int, Node*> GraphNodeType;
 
 
@@ -85,6 +109,8 @@ public:
     ///Send markers to visualize the graph nodes (cam positions) in rviz (if somebody subscribed)
     void visualizeGraphNodes() const;
 
+		void visualizeClouds();
+
     ///Compute the transform between the fixed frame (usually the initial position of the cam) 
     /// and the node from the motion (given in sensor frame)
     tf::StampedTransform stampedTransformInWorldFrame(const Node* node, 
@@ -92,6 +118,8 @@ public:
 
 
 		QList<int> getPotentialEdgeTargetsWithDijkstra(const Node* new_node, int sequential_targets, int geodesic_targets, int sampled_targets, int predecessor_id, bool include_predecessor);
+
+		QList<QMatrix4x4>* getAllPosesAsMatrixList() const;
 
 
     //!This mutex restricts access to the optimizer's data structures
@@ -121,6 +149,12 @@ public:
     ///"Regular" edges from camera to camera as found form feature correspondeces
     g2o::HyperGraph::EdgeSet cam_cam_edges_;
 		ros::Publisher marker_pub_; 
+		ros::Publisher cloud_pub_;
+		unsigned int geodesic_depth_;
+		QList<int> keyframe_ids_;//Keyframes are added, if no previous keyframe was matched
+	  int earliest_loop_closure_node_;
+		int predecessor_candidates_;
+		unsigned int loop_closures_edges, sequential_edges;
 
 };
 

@@ -15,6 +15,8 @@
  */
 
 
+#include "my_slam/parameter_server.h"
+
 //Documentation see header file
 #include "pcl_conversions/pcl_conversions.h"
 #include "pcl/ros/conversions.h"
@@ -436,6 +438,13 @@ void OpenNIListener::callProcessing(cv::Mat visual_img, Node* node_ptr)
   //Thus another Callback can be started in the meantime, to create a new node in parallel
   if(true) {
     //ROS_DEBUG("Processing Node in parallel to the construction of the next node");
+		if(ParameterServer::instance()->get<bool>("use_gui")){
+      //visual_img points to the data received in the callback - which might be deallocated after the callback returns. 
+      //This will happen before visualization if processNode is running in background, therefore the data needs to be cloned
+      visualization_img_ = visual_img.clone();
+      visualization_depth_mono8_img_ = depth_mono8_img_.clone();
+      visualize_images(visualization_img_, depth_mono8_img_);
+    }
     future_ = QtConcurrent::run(this, &OpenNIListener::processNode, node_ptr); 
   }
   else { //Non-concurrent
@@ -552,7 +561,14 @@ QImage OpenNIListener::cvMat2QImage(const cv::Mat& image, unsigned int idx)
                 rgba_buffers_[idx].cols, rgba_buffers_[idx].rows, 
                 rgba_buffers_[idx].step, QImage::Format_RGB32 );
 }
-
+/**
+void OpenNIListener::togglePause(){
+  pause_ = !pause_;
+  ROS_INFO_NAMED("OpenNIListener", "Pause toggled to: %s", pause_? "true":"false");
+  if(pause_) Q_EMIT setGUIStatus("Processing Thread Paused");
+  else Q_EMIT setGUIStatus("Processing Thread Running");
+}
+**/
 /**
 //! Callback for the robot odometry
 void OpenNIListener::odomCallback(const nav_msgs::OdometryConstPtr& odom_msg){
@@ -565,3 +581,23 @@ void OpenNIListener::odomCallback(const nav_msgs::OdometryConstPtr& odom_msg){
 	//graph_mgr_->addOdometry(odom_msg->header.stamp,tflistener_);
 }
 **/
+
+void OpenNIListener::visualize_images(cv::Mat visual_image, cv::Mat depth_image){
+  if(ParameterServer::instance()->get<bool>("visualize_mono_depth_overlay")){
+    cv::Mat visual_edges = cv::Mat( visual_image.rows, visual_image.cols, CV_8UC1); 
+    cv::Mat depth_edges  = cv::Mat( depth_image.rows, depth_image.cols, CV_8UC1); 
+    overlay_edges(visual_image, depth_image, visual_edges, depth_edges);
+    Q_EMIT newDepthImage(cvMat2QImage(depth_image,depth_image, depth_image+visual_edges, 1)); //show registration by edge overlay
+    cv::Mat monochrome; 
+    if(visual_image.type() != CV_8UC1) {
+      monochrome = cv::Mat( visual_image.rows, visual_image.cols, CV_8UC1); 
+      cv::cvtColor(visual_image, monochrome, CV_RGB2GRAY);
+    } else {
+      monochrome = visual_image; 
+    }
+    Q_EMIT newVisualImage(cvMat2QImage(monochrome, monochrome + depth_edges, monochrome, 0)); //visual_idx=0
+  } else { // No overlay
+    Q_EMIT newVisualImage(cvMat2QImage(visual_image, 0)); //visual_idx=0
+    Q_EMIT newDepthImage(cvMat2QImage(depth_image, 1)); 
+  }
+}

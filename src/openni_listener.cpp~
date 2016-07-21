@@ -15,10 +15,13 @@
  */
 
 
+#include "my_slam/parameter_server.h"
+
 //Documentation see header file
 #include "pcl_conversions/pcl_conversions.h"
 #include "pcl/ros/conversions.h"
 #include <pcl/common/distances.h>
+#include <visualization_msgs/Marker.h>
 #include <pcl/io/io.h>
 #include <pcl/io/impl/pcd_io.hpp>
 #include "pcl_ros/transforms.h"
@@ -435,6 +438,13 @@ void OpenNIListener::callProcessing(cv::Mat visual_img, Node* node_ptr)
   //Thus another Callback can be started in the meantime, to create a new node in parallel
   if(true) {
     //ROS_DEBUG("Processing Node in parallel to the construction of the next node");
+		if(ParameterServer::instance()->get<bool>("use_gui")){
+      //visual_img points to the data received in the callback - which might be deallocated after the callback returns. 
+      //This will happen before visualization if processNode is running in background, therefore the data needs to be cloned
+      visualization_img_ = visual_img.clone();
+      visualization_depth_mono8_img_ = depth_mono8_img_.clone();
+      visualize_images(visualization_img_, depth_mono8_img_);
+    }
     future_ = QtConcurrent::run(this, &OpenNIListener::processNode, node_ptr); 
   }
   else { //Non-concurrent
@@ -551,7 +561,14 @@ QImage OpenNIListener::cvMat2QImage(const cv::Mat& image, unsigned int idx)
                 rgba_buffers_[idx].cols, rgba_buffers_[idx].rows, 
                 rgba_buffers_[idx].step, QImage::Format_RGB32 );
 }
-
+/**
+void OpenNIListener::togglePause(){
+  pause_ = !pause_;
+  ROS_INFO_NAMED("OpenNIListener", "Pause toggled to: %s", pause_? "true":"false");
+  if(pause_) Q_EMIT setGUIStatus("Processing Thread Paused");
+  else Q_EMIT setGUIStatus("Processing Thread Running");
+}
+**/
 /**
 //! Callback for the robot odometry
 void OpenNIListener::odomCallback(const nav_msgs::OdometryConstPtr& odom_msg){
