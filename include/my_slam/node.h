@@ -14,6 +14,7 @@
 #include <pcl/point_cloud.h>
 #include <Eigen/StdVector>
 #include "my_slam/matching_result.h" 
+#include "my_slam/parameter_server.h"
 
 typedef std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> > std_vector_of_eigen_vector4f;
 
@@ -33,6 +34,10 @@ public:
 
 	Node(){};
 	~Node();
+
+
+	//!erase the points from the cloud to save memory
+  void clearPointCloud();
 	
 
 	//Compare nodes and give transformation between them
@@ -66,6 +71,14 @@ public:
                                        Eigen::Matrix4f& resulting_transformation,
                                        float& rmse, 
                                        std::vector<cv::DMatch>& matches) const;
+
+
+	bool getRelativeTransformationPCL2(const Node* earlier_node,
+                                       std::vector<cv::DMatch>* initial_matches,
+                                       Eigen::Matrix4f& resulting_transformation,
+                                       float& rmse, 
+                                       std::vector<cv::DMatch>& matches) const;
+
 
 
 
@@ -102,12 +115,12 @@ public:
   tf::StampedTransform base2points_; //!<contains the transformation from the base (defined on param server) to the point_cloud
 
 	std::string base_frame_name;
-	std::string feature_extractor_type_;
-	std::string matcher_type_;
+	//std::string feature_extractor_type_;
+	//std::string matcher_type_;
 
-	int min_matches_;
-	float max_dist_for_inliers_;
-	int ransac_iterations_;
+	//int min_matches_;
+	//float max_dist_for_inliers_;
+	//int ransac_iterations_;
 	cv::Mat m_img;
 
 

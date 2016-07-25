@@ -62,9 +62,10 @@ typedef message_filters::Subscriber<sensor_msgs::CameraInfo> cinfo_sub_type;
 typedef message_filters::Subscriber<sensor_msgs::PointCloud2> pc_sub_type;      
 typedef message_filters::Subscriber<nav_msgs::Odometry> odom_sub_type;
 
-typedef pcl::PointCloud<pcl::PointXYZRGB> pointcloud_type;
+//typedef pcl::PointCloud<pcl::PointXYZRGB> pointcloud_type;
 
 using namespace cv;
+
 
 //Use Grid or Dynamic or GridDynamic as prefix of FAST, SIFT, SURF or AORB
 cv::FeatureDetector* createDetector(const std::string& detectorName){
@@ -171,6 +172,27 @@ cv::DescriptorExtractor* createDescriptorExtractor(const std::string& descriptor
 }
 
 
+void OpenNIListener::visualize_images(cv::Mat visual_image, cv::Mat depth_image){
+  if(ParameterServer::instance()->get<bool>("visualize_mono_depth_overlay")){
+    cv::Mat visual_edges = cv::Mat( visual_image.rows, visual_image.cols, CV_8UC1); 
+    cv::Mat depth_edges  = cv::Mat( depth_image.rows, depth_image.cols, CV_8UC1); 
+    overlay_edges(visual_image, depth_image, visual_edges, depth_edges);
+    Q_EMIT newDepthImage(cvMat2QImage(depth_image,depth_image, depth_image+visual_edges, 1)); //show registration by edge overlay
+    cv::Mat monochrome; 
+    if(visual_image.type() != CV_8UC1) {
+      monochrome = cv::Mat( visual_image.rows, visual_image.cols, CV_8UC1); 
+      cv::cvtColor(visual_image, monochrome, CV_RGB2GRAY);
+    } else {
+      monochrome = visual_image; 
+    }
+    Q_EMIT newVisualImage(cvMat2QImage(monochrome, monochrome + depth_edges, monochrome, 0)); //visual_idx=0
+  } else { // No overlay
+    Q_EMIT newVisualImage(cvMat2QImage(visual_image, 0)); //visual_idx=0
+    Q_EMIT newDepthImage(cvMat2QImage(depth_image, 1)); 
+  }
+}
+
+
 OpenNIListener::OpenNIListener(GraphManager* graph_mgr)
 : graph_mgr_(graph_mgr),
   stereo_sync_(NULL), kinect_sync_(NULL), no_cloud_sync_(NULL),
@@ -181,27 +203,47 @@ OpenNIListener::OpenNIListener(GraphManager* graph_mgr)
   image_encoding_("rgb8")
 {
   
-  detector_ = createDetector("ORB");
-  extractor_ = createDescriptorExtractor("FREAK");
+  //detector_ = createDetector("ORB");
+  //extractor_ = createDescriptorExtractor("FREAK");
+  //setupSubscribers();
+
+
+	ParameterServer* ps = ParameterServer::instance();
+  if(ps->get<bool>("encoding_bgr")){
+    image_encoding_ = "bgr8";//used in conversion to qimage. exact value does not matter, just not rgb8
+  }
+  detector_ = createDetector(ps->get<std::string>("feature_detector_type"));
+  extractor_ = createDescriptorExtractor(ps->get<std::string>("feature_extractor_type"));
   setupSubscribers();
 }
 
 
-
-
 void OpenNIListener::setupSubscribers(){
   //ParameterServer* ps = ParameterServer::instance();
-  int q = 50;
+  //int q = 50;
+	ParameterServer* ps = ParameterServer::instance();
+  int q = ps->get<int>("subscriber_queue_size");
   ros::NodeHandle nh;
 	graph_mgr_->marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/pose_graph_markers",0);
   tflistener_ = new tf::TransformListener(nh);
   if(true){
+	
+		/**
     std::string visua_tpc = "/camera/color/image_raw";
     std::string depth_tpc = "/camera/depth/image_raw";
     std::string cinfo_tpc = "/camera/depth/camera_info";
     std::string cloud_tpc = "/camera/depth/points";
     std::string widev_tpc = "";
     std::string widec_tpc = "";
+		**/
+
+
+		std::string visua_tpc = ps->get<std::string>("topic_image_mono");
+    std::string depth_tpc = ps->get<std::string>("topic_image_depth");
+    std::string cinfo_tpc = ps->get<std::string>("camera_info_topic");
+    std::string cloud_tpc = ps->get<std::string>("topic_points");
+    std::string widev_tpc = ps->get<std::string>("wide_topic");
+    std::string widec_tpc = ps->get<std::string>("wide_cloud_topic");
 
     //All information from Kinect
     if(!visua_tpc.empty() && !depth_tpc.empty() && !cloud_tpc.empty())
@@ -275,6 +317,17 @@ void OpenNIListener::stereoCallback(const sensor_msgs::ImageConstPtr& visual_img
     //ROS_INFO_NAMED("OpenNIListener", "Received data from stereo cam");
     //ROS_WARN_ONCE_NAMED("eval", "First RGBD-Data Received");
     
+		ParameterServer* ps = ParameterServer::instance();
+    if(++data_id_ < ps->get<int>("skip_first_n_frames") 
+       || data_id_ % ps->get<int>("data_skip_step") != 0){ 
+      ROS_INFO_THROTTLE_NAMED(1, "OpenNIListener", "Skipping Frame %i because of data_skip_step setting (this msg is only shown once a sec)", data_id_);
+      if(ps->get<bool>("use_gui")){//Show the image, even if not using it
+        cv::Mat visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
+        Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
+      }
+      return;
+    }
+
 
     //calculate depthMask
     pointcloud_type::Ptr pc_col(new pointcloud_type());//will belong to node
@@ -297,6 +350,7 @@ void OpenNIListener::stereoCallback(const sensor_msgs::ImageConstPtr& visual_img
     cameraCallback(visual_img, pc_col, depth_img);
 }
 
+
 OpenNIListener::~OpenNIListener(){
   delete tflistener_;
 }
@@ -308,7 +362,28 @@ void OpenNIListener::noCloudCallback (const sensor_msgs::ImageConstPtr& visual_i
   //ScopedTimer s(__FUNCTION__);
   //ROS_WARN_ONCE_NAMED("eval", "First RGBD-Data Received");
   //ROS_DEBUG("Received data from kinect");
-  //ParameterServer* ps = ParameterServer::instance();
+  ParameterServer* ps = ParameterServer::instance();
+
+	if(++data_id_ < ps->get<int>("skip_first_n_frames") 
+     || data_id_ % ps->get<int>("data_skip_step") != 0)
+  { 
+  // If only a subset of frames are used, skip computations but visualize if gui is running
+    ROS_INFO_THROTTLE_NAMED(1, "OpenNIListener", "Skipping Frame %i because of data_skip_step setting (this msg is only shown once a sec)", data_id_);
+    if(ps->get<bool>("use_gui")){//Show the image, even if not using it
+      //cv::Mat depth_float_img = cv_bridge::toCvCopy(depth_img_msg)->image;
+      cv::Mat visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
+      //if(visual_img.rows != depth_float_img.rows || 
+      //   visual_img.cols != depth_float_img.cols){
+      //  ROS_ERROR("depth and visual image differ in size! Ignoring Data");
+      //  return;
+      //}
+      //depthToCV8UC1(depth_float_img, depth_mono8_img_); //float can't be visualized or used as mask in float format TODO: reprogram keypoint detector to use float values with nan to mask
+      //image_encoding_ = visual_img_msg->encoding;
+      //Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
+      //Q_EMIT newDepthImage (cvMat2QImage(depth_mono8_img_,1));//overwrites last cvMat2QImage
+    }
+    return;
+  }
 
   //Convert images to OpenCV format
   //sensor_msgs::CvBridge bridge;
@@ -351,7 +426,29 @@ void OpenNIListener::kinectCallback (const sensor_msgs::ImageConstPtr& visual_im
   //ScopedTimer s(__FUNCTION__);
   //ROS_DEBUG("Received data from kinect");
   //ROS_WARN_ONCE_NAMED("eval", "First RGBD-Data Received");
-  // ParameterServer* ps = ParameterServer::instance();
+  ParameterServer* ps = ParameterServer::instance();
+
+	
+  if(++data_id_ < ps->get<int>("skip_first_n_frames") 
+     || data_id_ % ps->get<int>("data_skip_step") != 0)
+  { 
+  // If only a subset of frames are used, skip computations but visualize if gui is running
+    ROS_INFO_THROTTLE_NAMED(1, "OpenNIListener", "Skipping Frame %i because of data_skip_step setting (this msg is only shown once a sec)", data_id_);
+    if(ps->get<bool>("use_gui")){//Show the image, even if not using it
+      //cv::Mat depth_float_img = cv_bridge::toCvCopy(depth_img_msg)->image;
+      cv::Mat visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
+      //if(visual_img.rows != depth_float_img.rows || 
+      //   visual_img.cols != depth_float_img.cols){
+      //  ROS_ERROR("depth and visual image differ in size! Ignoring Data");
+      //  return;
+      //}
+      //depthToCV8UC1(depth_float_img, depth_mono8_img_); //float can't be visualized or used as mask in float format TODO: reprogram keypoint detector to use float values with nan to mask
+      //image_encoding_ = visual_img_msg->encoding;
+      //Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
+      //Q_EMIT newDepthImage (cvMat2QImage(depth_mono8_img_,1));//overwrites last cvMat2QImage
+    }
+    return;
+  }
 
 
   //Get images into OpenCV format
@@ -436,7 +533,7 @@ void OpenNIListener::callProcessing(cv::Mat visual_img, Node* node_ptr)
   visualization_depth_mono8_img_ = depth_mono8_img_;//No copy
   //With this define, processNode runs in the background and after finishing visualizes the results
   //Thus another Callback can be started in the meantime, to create a new node in parallel
-  if(true) {
+  if(ParameterServer::instance()->get<bool>("concurrent_node_construction")) {
     //ROS_DEBUG("Processing Node in parallel to the construction of the next node");
 		if(ParameterServer::instance()->get<bool>("use_gui")){
       //visual_img points to the data received in the callback - which might be deallocated after the callback returns. 
@@ -487,10 +584,14 @@ void OpenNIListener::processNode(Node* new_node)
 }
 
 
-
-
-
-
+/**
+void OpenNIListener::togglePause(){
+  pause_ = !pause_;
+  ROS_INFO_NAMED("OpenNIListener", "Pause toggled to: %s", pause_? "true":"false");
+  if(pause_) Q_EMIT setGUIStatus("Processing Thread Paused");
+  else Q_EMIT setGUIStatus("Processing Thread Running");
+}
+**/
 
 
 /// Create a QImage from image. The QImage stores its data in the rgba_buffers_ indexed by idx (reused/overwritten each call)
@@ -528,7 +629,6 @@ QImage OpenNIListener::cvMat2QImage(const cv::Mat& channel1, const cv::Mat& chan
 }
 
 
-
 /// Create a QImage from image. The QImage stores its data in the rgba_buffers_ indexed by idx (reused/overwritten each call)
 QImage OpenNIListener::cvMat2QImage(const cv::Mat& image, unsigned int idx)
 {
@@ -561,14 +661,7 @@ QImage OpenNIListener::cvMat2QImage(const cv::Mat& image, unsigned int idx)
                 rgba_buffers_[idx].cols, rgba_buffers_[idx].rows, 
                 rgba_buffers_[idx].step, QImage::Format_RGB32 );
 }
-/**
-void OpenNIListener::togglePause(){
-  pause_ = !pause_;
-  ROS_INFO_NAMED("OpenNIListener", "Pause toggled to: %s", pause_? "true":"false");
-  if(pause_) Q_EMIT setGUIStatus("Processing Thread Paused");
-  else Q_EMIT setGUIStatus("Processing Thread Running");
-}
-**/
+
 /**
 //! Callback for the robot odometry
 void OpenNIListener::odomCallback(const nav_msgs::OdometryConstPtr& odom_msg){
@@ -582,22 +675,3 @@ void OpenNIListener::odomCallback(const nav_msgs::OdometryConstPtr& odom_msg){
 }
 **/
 
-void OpenNIListener::visualize_images(cv::Mat visual_image, cv::Mat depth_image){
-  if(ParameterServer::instance()->get<bool>("visualize_mono_depth_overlay")){
-    cv::Mat visual_edges = cv::Mat( visual_image.rows, visual_image.cols, CV_8UC1); 
-    cv::Mat depth_edges  = cv::Mat( depth_image.rows, depth_image.cols, CV_8UC1); 
-    overlay_edges(visual_image, depth_image, visual_edges, depth_edges);
-    Q_EMIT newDepthImage(cvMat2QImage(depth_image,depth_image, depth_image+visual_edges, 1)); //show registration by edge overlay
-    cv::Mat monochrome; 
-    if(visual_image.type() != CV_8UC1) {
-      monochrome = cv::Mat( visual_image.rows, visual_image.cols, CV_8UC1); 
-      cv::cvtColor(visual_image, monochrome, CV_RGB2GRAY);
-    } else {
-      monochrome = visual_image; 
-    }
-    Q_EMIT newVisualImage(cvMat2QImage(monochrome, monochrome + depth_edges, monochrome, 0)); //visual_idx=0
-  } else { // No overlay
-    Q_EMIT newVisualImage(cvMat2QImage(visual_image, 0)); //visual_idx=0
-    Q_EMIT newDepthImage(cvMat2QImage(depth_image, 1)); 
-  }
-}

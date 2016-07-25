@@ -2,6 +2,7 @@
 #define MY_SLAM_GRAPH_MAHAGER_H
 
 #include "my_slam/node.h"
+#include "my_slam/parameter_server.h"
 #include "g2o/core/sparse_optimizer.h"
 #include "g2o/core/block_solver.h"
 #include "g2o/core/factory.h"
@@ -15,6 +16,7 @@
 #include "g2o/core/robust_kernel_impl.h"
 #include "g2o/examples/interactive_slam/g2o_incremental/graph_optimizer_sparse_incremental.h"
 #include "g2o/examples/interactive_slam/g2o_interactive/g2o_slam_interface.h"
+
 
 
 #include <tf/transform_broadcaster.h>

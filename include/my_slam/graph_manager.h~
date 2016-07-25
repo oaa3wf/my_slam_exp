@@ -52,7 +52,7 @@ class GraphManager : public QObject {
       void setGraph(const g2o::OptimizableGraph*);
       void iamBusy(int id, const char* message, int max);
       void progress(int id, const char* message, int val);
-      void renderableOctomap(Renderable* r);
+      //void renderableOctomap(Renderable* r);
 
 	public:
 	//GraphManager();

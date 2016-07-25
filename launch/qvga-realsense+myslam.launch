@@ -5,16 +5,16 @@
 <launch>
   <!--include file="/home/sastrygrp/code/realsense/realsense_ws/src/realsense/camera/launch/realsense_r200_rgbd.launch"/-->
 	<!--node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="1 0 0 0 0 0 1 openni_rgb_optical_frame camera_rgb_optical_frame 100" /-->
-  <node pkg="my_slam" type="my_slam" name="my_slam" cwd="node" required="true" output="screen" > <!---launch-prefix="/usr/bin/xterm -e gdb -ex -args" --> 
+  <node pkg="my_slam" type="my_slam" name="my_slam" cwd="node" required="true" output="screen" launch-prefix="/usr/bin/xterm -e gdb -ex -args" > 
     <!-- Input data settings-->
     <param name="config/topic_image_mono"              value="/camera/color/image_raw"/> 
     <param name="config/topic_image_depth"             value="/camera/depth/image_raw"/>
-		<!--param name="config/topic_points"             		 value="/camera/depth/points"/-->
+		<param name="config/topic_points"             		 value="/camera/depth/points"/>
     <param name="config/depth_camera_cx"               value="159.5"/>
     <param name="config/depth_camera_cy"               value="119.09790802001953"/>
     <param name="config/depth_camera_fx"               value="301.8683166503906"/>
     <param name="config/depth_camera_fy"               value="301.8683166503906"/>
-    <param name="config/camera_info_topic"             value="/camera/color/camera_info"/>
+    <param name="config/camera_info_topic"             value="/camera/depth/camera_info"/>
 	<param name="config/create_cloud_every_nth_node"   value="1"/>
 	<!--param name="config/max_connections"               value="15"/-->
 	<param name="config/max_dist_for_inliers"          value="1"/>

@@ -62,7 +62,7 @@ typedef message_filters::Subscriber<sensor_msgs::CameraInfo> cinfo_sub_type;
 typedef message_filters::Subscriber<sensor_msgs::PointCloud2> pc_sub_type;      
 typedef message_filters::Subscriber<nav_msgs::Odometry> odom_sub_type;
 
-typedef pcl::PointCloud<pcl::PointXYZRGB> pointcloud_type;
+//typedef pcl::PointCloud<pcl::PointXYZRGB> pointcloud_type;
 
 using namespace cv;
 
@@ -182,8 +182,20 @@ OpenNIListener::OpenNIListener(GraphManager* graph_mgr)
 {
   
   detector_ = createDetector("ORB");
-  extractor_ = createDescriptorExtractor("FREAK");
+  extractor_ = createDescriptorExtractor("ORB");
   setupSubscribers();
+
+
+/**
+	ParameterServer* ps = ParameterServer::instance();
+  if(ps->get<bool>("encoding_bgr")){
+    image_encoding_ = "bgr8";//used in conversion to qimage. exact value does not matter, just not rgb8
+  }
+  detector_ = createDetector(ps->get<std::string>("feature_detector_type"));
+  extractor_ = createDescriptorExtractor(ps->get<std::string>("feature_extractor_type"));
+
+  setupSubscribers();
+**/
 }
 
 
@@ -193,15 +205,26 @@ void OpenNIListener::setupSubscribers(){
   //ParameterServer* ps = ParameterServer::instance();
   int q = 50;
   ros::NodeHandle nh;
+	ParameterServer* ps = ParameterServer::instance();
 	graph_mgr_->marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/pose_graph_markers",0);
   tflistener_ = new tf::TransformListener(nh);
   if(true){
+
+		/**
     std::string visua_tpc = "/camera/color/image_raw";
     std::string depth_tpc = "/camera/depth/image_raw";
     std::string cinfo_tpc = "/camera/depth/camera_info";
     std::string cloud_tpc = "/camera/depth/points";
     std::string widev_tpc = "";
     std::string widec_tpc = "";
+		**/
+
+		std::string visua_tpc = ps->get<std::string>("topic_image_mono");
+    std::string depth_tpc = ps->get<std::string>("topic_image_depth");
+    std::string cinfo_tpc = ps->get<std::string>("camera_info_topic");
+    std::string cloud_tpc = ps->get<std::string>("topic_points");
+    std::string widev_tpc = ps->get<std::string>("wide_topic");
+    std::string widec_tpc = ps->get<std::string>("wide_cloud_topic");
 
     //All information from Kinect
     if(!visua_tpc.empty() && !depth_tpc.empty() && !cloud_tpc.empty())
@@ -581,3 +604,24 @@ void OpenNIListener::odomCallback(const nav_msgs::OdometryConstPtr& odom_msg){
 	//graph_mgr_->addOdometry(odom_msg->header.stamp,tflistener_);
 }
 **/
+
+void OpenNIListener::visualize_images(cv::Mat visual_image, cv::Mat depth_image){
+  if(ParameterServer::instance()->get<bool>("visualize_mono_depth_overlay")){
+    cv::Mat visual_edges = cv::Mat( visual_image.rows, visual_image.cols, CV_8UC1); 
+    cv::Mat depth_edges  = cv::Mat( depth_image.rows, depth_image.cols, CV_8UC1); 
+    overlay_edges(visual_image, depth_image, visual_edges, depth_edges);
+    Q_EMIT newDepthImage(cvMat2QImage(depth_image,depth_image, depth_image+visual_edges, 1)); //show registration by edge overlay
+    cv::Mat monochrome; 
+    if(visual_image.type() != CV_8UC1) {
+      monochrome = cv::Mat( visual_image.rows, visual_image.cols, CV_8UC1); 
+      cv::cvtColor(visual_image, monochrome, CV_RGB2GRAY);
+    } else {
+      monochrome = visual_image; 
+    }
+    Q_EMIT newVisualImage(cvMat2QImage(monochrome, monochrome + depth_edges, monochrome, 0)); //visual_idx=0
+  } else { // No overlay
+    Q_EMIT newVisualImage(cvMat2QImage(visual_image, 0)); //visual_idx=0
+    Q_EMIT newDepthImage(cvMat2QImage(depth_image, 1)); 
+  }
+}
+
